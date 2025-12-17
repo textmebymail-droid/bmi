@@ -1,240 +1,200 @@
 import streamlit as st
 import pandas as pd
-import datetime
+from datetime import date, timedelta
 from fpdf import FPDF
-import base64
+import io
 
 # تنظیمات صفحه
-st.set_page_config(page_title="Pro Run Coach", page_icon="🏃‍♂️", layout="wide")
+st.set_page_config(page_title="Runna AI Coach", page_icon="🧬", layout="wide")
 
 # ==========================================
-# 🧠 بخش محاسبات (Logic)
+# 🧠 بخش منطق و هوش مصنوعی (Algorithm)
 # ==========================================
 
-def calculate_zones(age):
-    max_hr = 220 - age
-    return {
-        "Zone 1 (Warm up)": f"{int(max_hr * 0.50)} - {int(max_hr * 0.60)} bpm",
-        "Zone 2 (Easy)": f"{int(max_hr * 0.60)} - {int(max_hr * 0.70)} bpm",
-        "Zone 3 (Aerobic)": f"{int(max_hr * 0.70)} - {int(max_hr * 0.80)} bpm",
-        "Zone 4 (Threshold)": f"{int(max_hr * 0.80)} - {int(max_hr * 0.90)} bpm",
-        "Zone 5 (Max)": f"{int(max_hr * 0.90)} - {int(max_hr * 1.00)} bpm",
-    }
-
-def calculate_paces(current_5k_str):
-    try:
-        parts = current_5k_str.split(':')
-        total_sec = int(parts[0]) * 60 + int(parts[1])
-        pace = total_sec / 5
+class RunnaCoach:
+    def __init__(self, current_5k, race_date, days_per_week, level, strength_days):
+        self.today = date.today()
+        self.race_date = race_date
+        self.days_per_week = days_per_week
+        self.level = level
+        self.strength_days = strength_days
+        self.pace_zones = self._calculate_paces(current_5k)
         
-        def fmt(p):
-            mins = int(p // 60)
-            secs = int(p % 60)
-            return f"{mins}:{secs:02d}"
-
-        return {
-            "Easy": fmt(pace * 1.25),   # Runna style easy
-            "Tempo": fmt(pace * 1.08),
-            "Interval": fmt(pace * 0.92),
-            "Long": fmt(pace * 1.35),
-            "Race": fmt(pace)
-        }
-    except:
-        return None
-
-def generate_ics_file(plan_df, start_date):
-    """تولید فایل برای گوگل کلندر"""
-    ics_content = "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//RunnaClone//RunPlan//EN\n"
-    
-    for index, row in plan_df.iterrows():
-        if row['نوع تمرین'] == "Rest":
-            continue
+    def _calculate_paces(self, time_str):
+        # تبدیل زمان به ثانیه و محاسبه دقیق زون‌ها
+        try:
+            m, s = map(int, time_str.split(':'))
+            total_sec = m * 60 + s
+            pace = total_sec / 5  # pace per km
             
-        # محاسبه تاریخ هر تمرین
-        day_offset = index  # فرض ساده: هر سطر یک روز است
-        event_date = start_date + datetime.timedelta(days=day_offset)
-        date_str = event_date.strftime("%Y%m%d")
-        
-        ics_content += "BEGIN:VEVENT\n"
-        ics_content += f"DTSTART;VALUE=DATE:{date_str}\n"
-        ics_content += f"SUMMARY:🏃 {row['نوع تمرین']} - {row['مسافت/زمان']}\n"
-        ics_content += f"DESCRIPTION:{row['جزئیات تمرین']}\n"
-        ics_content += "END:VEVENT\n"
-        
-    ics_content += "END:VCALENDAR"
-    return ics_content
+            def fmt(p): return f"{int(p//60)}:{int(p%60):02d}"
+            
+            return {
+                "Easy": fmt(pace * 1.35),
+                "Long": fmt(pace * 1.45),
+                "Tempo": fmt(pace * 1.15),
+                "Interval": fmt(pace * 0.95),
+                "Race": fmt(pace)
+            }
+        except:
+            return None
 
-def create_pdf(plan_df, user_info, paces, zones):
-    pdf = FPDF()
-    pdf.add_page()
-    pdf.set_font("Arial", size=12)
-    
-    # عنوان
-    pdf.set_font("Arial", 'B', 16)
-    pdf.cell(200, 10, txt="Running Training Plan", ln=1, align='C')
-    
-    # مشخصات
-    pdf.set_font("Arial", size=10)
-    pdf.cell(200, 10, txt=f"Athlete: {user_info['name']} | Goal: {user_info['goal']}", ln=1, align='L')
-    
-    # سرعت‌ها
-    pdf.ln(5)
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(200, 10, txt="Your Training Paces:", ln=1)
-    pdf.set_font("Arial", size=10)
-    for k, v in paces.items():
-        pdf.cell(40, 10, txt=f"{k}: {v}/km", border=1)
-    pdf.ln(15)
-
-    # زون‌ها
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(200, 10, txt="Heart Rate Zones:", ln=1)
-    pdf.set_font("Arial", size=10)
-    for k, v in zones.items():
-        pdf.cell(0, 8, txt=f"{k}: {v}", ln=1)
-    pdf.ln(10)
-
-    # جدول برنامه
-    pdf.set_font("Arial", 'B', 12)
-    pdf.cell(200, 10, txt="Weekly Schedule:", ln=1)
-    pdf.set_font("Arial", size=8)
-    
-    # هدر جدول
-    pdf.cell(30, 8, "Day", 1)
-    pdf.cell(40, 8, "Type", 1)
-    pdf.cell(120, 8, "Details", 1)
-    pdf.ln()
-    
-    for index, row in plan_df.iterrows():
-        details = row['جزئیات تمرین'].encode('latin-1', 'replace').decode('latin-1') # رفع مشکل فونت ساده
-        pdf.cell(30, 8, str(row['روز']), 1)
-        pdf.cell(40, 8, str(row['نوع تمرین']), 1)
-        pdf.cell(120, 8, str(details), 1)
-        pdf.ln()
+    def generate_plan(self):
+        # محاسبه تعداد هفته‌ها تا مسابقه
+        delta = self.race_date - self.today
+        weeks_count = delta.days // 7
         
-    return pdf.output(dest='S').encode('latin-1')
+        if weeks_count < 1:
+            return None, "تاریخ مسابقه باید حداقل ۱ هفته بعد باشد."
+            
+        full_schedule = []
+        
+        # الگوریتم تولید برنامه
+        for w in range(weeks_count):
+            week_start = self.today + timedelta(days=w*7)
+            phase = self._get_phase(w, weeks_count)
+            
+            # تولید تمرینات بر اساس تعداد روزهای انتخابی کاربر
+            workouts = self._get_weekly_workouts(phase)
+            
+            # پخش کردن تمرینات در هفته
+            day_counter = 0
+            for i in range(7):
+                current_day_date = week_start + timedelta(days=i)
+                day_name = current_day_date.strftime("%A")
+                
+                # منطق ساده برای چیدن روزها (شنبه تا جمعه)
+                activity = "Rest 💤"
+                details = "Recovery & Stretch"
+                
+                # اگر کاربر این روز را انتخاب کرده باشد
+                # (این بخش ساده شده است، در نسخه واقعی پیچیده‌تر است)
+                if day_counter < len(workouts) and i % 2 == 0: # یک روز در میان
+                     activity = workouts[day_counter]['type']
+                     details = workouts[day_counter]['desc']
+                     day_counter += 1
+                elif "Strength" in self.strength_days and i == 3: # وسط هفته قدرتی
+                    activity = "Strength 🏋️"
+                    details = "Core & Legs Workout (30 mins)"
+
+                full_schedule.append({
+                    "Date": current_day_date,
+                    "Week": w + 1,
+                    "Phase": phase,
+                    "Activity": activity,
+                    "Details": details
+                })
+                
+        return pd.DataFrame(full_schedule), None
+
+    def _get_phase(self, current_week, total_weeks):
+        if current_week < total_weeks * 0.4: return "Base Building 🏗️"
+        if current_week < total_weeks * 0.8: return "Peak Training 🔥"
+        return "Tapering 📉" # کاهش فشار قبل مسابقه
+
+    def _get_weekly_workouts(self, phase):
+        # تمرینات بر اساس فاز تغییر می‌کنند
+        p = self.pace_zones
+        if phase == "Base Building 🏗️":
+            return [
+                {"type": "Easy Run", "desc": f"30-40 min @ {p['Easy']}/km"},
+                {"type": "Tempo Run", "desc": f"20 min @ {p['Tempo']}/km"},
+                {"type": "Long Run", "desc": f"5-8 km @ {p['Long']}/km"}
+            ]
+        elif phase == "Peak Training 🔥":
+            return [
+                {"type": "Intervals", "desc": f"8x400m @ {p['Interval']}/km"},
+                {"type": "Threshold", "desc": f"40 min mixed pace"},
+                {"type": "Long Run", "desc": f"10-15 km @ {p['Long']}/km"}
+            ]
+        else: # Taper
+            return [
+                {"type": "Shakeout", "desc": f"20 min very easy"},
+                {"type": "Strides", "desc": "10 min + 4 strides"},
+                {"type": "Race Prep", "desc": f"5 km easy @ {p['Easy']}/km"}
+            ]
 
 # ==========================================
-# 📱 رابط کاربری (UI)
+# 🖥️ رابط کاربری (UI)
 # ==========================================
 
-st.title("🏃‍♂️ Runna Pro Clone")
-st.markdown("برنامه تمرینی حرفه‌ای با قابلیت خروجی **PDF** و **Google Calendar**")
+st.title("Runna AI Coach 🧬")
+st.caption("برنامه‌ریزی هوشمند بر اساس تاریخ مسابقه و سطح شما")
 
-# --- سایدبار: مشخصات فردی ---
-with st.sidebar:
-    st.header("پروفایل دونده")
-    name = st.text_input("نام:", "Runner")
-    age = st.number_input("سن:", min_value=15, max_value=90, value=30)
-    weight = st.number_input("وزن (kg):", value=70)
-    
-    st.divider()
-    st.header("تنظیمات برنامه")
-    goal = st.selectbox("هدف:", ["5K Beginner", "10K Intermediate", "Half Marathon Pro"])
-    record_5k = st.text_input("رکورد ۵ کیلومتر فعلی:", "25:00")
-    start_date = st.date_input("تاریخ شروع برنامه:", datetime.date.today())
-    
-    st.info("⚠️ نکته: برای خروجی تقویم، تاریخ شروع را دقیق تنظیم کنید.")
+# 1. تنظیمات اولیه (Setup)
+with st.expander("⚙️ تنظیمات پروفایل (اینجا شروع کنید)", expanded=True):
+    c1, c2 = st.columns(2)
+    with c1:
+        name = st.text_input("نام ورزشکار", "Doctor")
+        level = st.selectbox("سطح شما", ["Beginner", "Intermediate", "Advanced"])
+        days = st.slider("چند روز در هفته می‌دوید؟", 2, 6, 3)
+    with c2:
+        current_5k = st.text_input("رکورد فعلی ۵ کیلومتر", "25:00")
+        race_date = st.date_input("تاریخ مسابقه", date.today() + timedelta(days=60))
+        strength = st.multiselect("تمرینات جانبی", ["Strength Training", "Pilates"], ["Strength Training"])
 
-# --- محاسبات ---
-paces = calculate_paces(record_5k)
-zones = calculate_zones(age)
-
-if paces:
-    # 1. نمایش زون‌های ضربان قلب و سرعت‌ها
-    col1, col2 = st.columns(2)
+# 2. اجرا
+if st.button("تولید برنامه هوشمند"):
+    coach = RunnaCoach(current_5k, race_date, days, level, strength)
     
-    with col1:
-        st.subheader("💓 زون‌های قلبی شما")
-        st.caption("برای نتیجه‌گیری حرفه‌ای، در زون مشخص شده بدوید.")
-        st.table(pd.DataFrame(list(zones.items()), columns=["Zone", "Heart Rate"]))
+    # نمایش سرعت‌ها
+    if coach.pace_zones:
+        st.success("✅ پروفایل آنالیز شد. سرعت‌های شما:")
+        cols = st.columns(5)
+        p = coach.pace_zones
+        cols[0].metric("Easy", p['Easy'])
+        cols[1].metric("Long", p['Long'])
+        cols[2].metric("Tempo", p['Tempo'])
+        cols[3].metric("Interval", p['Interval'])
+        cols[4].metric("Race", p['Race'])
+    
+    # تولید برنامه
+    df, error = coach.generate_plan()
+    
+    if error:
+        st.error(error)
+    else:
+        st.divider()
         
-    with col2:
-        st.subheader("⚡ سرعت‌های تمرینی")
-        st.caption("دقیقه بر کیلومتر")
-        # نمایش متریک‌ها
-        c1, c2 = st.columns(2)
-        c1.metric("Easy Pace", paces['Easy'])
-        c1.metric("Tempo Pace", paces['Tempo'])
-        c2.metric("Interval Pace", paces['Interval'])
-        c2.metric("Long Run", paces['Long'])
+        # تب‌بندی نمایش
+        tab1, tab2, tab3 = st.tabs(["📅 نمای کلی برنامه", "📄 خروجی PDF", "📆 گوگل کلندر"])
+        
+        with tab1:
+            st.dataframe(df, use_container_width=True)
+            
+            # نمودار پیشرفت حجم تمرین
+            st.caption("توزیع فشار تمرینی تا روز مسابقه:")
+            chart_data = df[df['Activity'] != 'Rest 💤'].groupby('Week').count()['Activity']
+            st.bar_chart(chart_data)
 
-    st.divider()
+        with tab2:
+            # ساخت PDF
+            pdf = FPDF()
+            pdf.add_page()
+            pdf.set_font("Arial", "B", 16)
+            pdf.cell(0, 10, f"Runna AI Plan for {name}", ln=True, align="C")
+            pdf.set_font("Arial", "", 12)
+            pdf.cell(0, 10, f"Goal: Race on {race_date}", ln=True, align="C")
+            pdf.ln(10)
+            
+            # اضافه کردن جدول به PDF (ساده)
+            pdf.set_font("Arial", size=10)
+            for i, row in df.iterrows():
+                line = f"W{row['Week']} | {row['Date'].strftime('%Y-%m-%d')} | {row['Activity']} | {row['Details']}"
+                # حذف اموجی‌ها برای جلوگیری از ارور PDF
+                line = line.encode('latin-1', 'ignore').decode('latin-1')
+                pdf.cell(0, 8, line, ln=True, border=1)
+                
+            pdf_bytes = pdf.output(dest='S').encode('latin-1')
+            st.download_button("دانلود فایل PDF کامل", pdf_bytes, "runna_plan.pdf", "application/pdf")
 
-    # 2. تولید دیتای برنامه (نمونه ۴ هفته‌ای فشرده برای نمایش)
-    st.subheader(f"📅 برنامه تمرینی: {goal}")
-    
-    # ساخت دیتای هوشمند بر اساس انتخاب
-    days = ["Saturday", "Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday"]
-    
-    # الگوی ساده برنامه (می‌تواند بسیار پیچیده‌تر شود)
-    if "5K" in goal:
-        workouts = [
-            ("Rest", "-", "Recovery Day"),
-            ("Easy Run", "30 min", f"Run at {paces['Easy']}. Keep HR in Zone 2."),
-            ("Intervals", "3km Total", f"1km Warmup, 5x400m @ {paces['Interval']}, 1km Cooldown"),
-            ("Rest", "-", "Recovery / Yoga"),
-            ("Easy Run", "30 min", f"Steady run at {paces['Easy']}."),
-            ("Rest", "-", "Rest Day"),
-            ("Long Run", "5 km", f"Long slow distance at {paces['Long']}.")
-        ]
-    elif "10K" in goal:
-        workouts = [
-            ("Rest", "-", "Recovery"),
-            ("Easy Run", "40 min", f"Zone 2 run at {paces['Easy']}."),
-            ("Tempo", "40 min", f"10min Warmup, 20min @ {paces['Tempo']}, 10min Cool"),
-            ("Easy Run", "30 min", f"Recovery run."),
-            ("Intervals", "5km Total", f"1km Warmup, 6x800m @ {paces['Interval']}, 1km Cooldown"),
-            ("Rest", "-", "Active Recovery"),
-            ("Long Run", "10 km", f"Endurance run at {paces['Long']}.")
-        ]
-    else: # Half Marathon
-        workouts = [
-            ("Rest", "-", "Recovery"),
-            ("Easy Run", "50 min", f"Zone 2 steady state."),
-            ("Speed", "8km Total", f"2km Warmup, 10x400m Hills, 2km Cooldown"),
-            ("Easy Run", "40 min", f"Recovery run."),
-            ("Tempo", "60 min", f"15min Warmup, 30min @ {paces['Tempo']}, 15min Cool"),
-            ("Rest", "-", "Yoga / Stretch"),
-            ("Long Run", "16 km", f"Big run! Keep pace at {paces['Long']}.")
-        ]
-
-    # تبدیل لیست به دیتافریم
-    plan_data = []
-    for i, day in enumerate(days):
-        plan_data.append({
-            "روز": day,
-            "نوع تمرین": workouts[i][0],
-            "مسافت/زمان": workouts[i][1],
-            "جزئیات تمرین": workouts[i][2]
-        })
-    
-    df_plan = pd.DataFrame(plan_data)
-    st.table(df_plan)
-    
-    # --- بخش دانلودها ---
-    st.subheader("📥 دانلود برنامه")
-    d_col1, d_col2 = st.columns(2)
-    
-    # دانلود فایل تقویم (ICS)
-    ics_text = generate_ics_file(df_plan, start_date)
-    d_col1.download_button(
-        label="📅 افزودن به تقویم (Google/Apple)",
-        data=ics_text,
-        file_name="runna_plan.ics",
-        mime="text/calendar"
-    )
-    
-    # دانلود PDF
-    # نکته: برای PDF ساده لاتین استفاده شده تا در سرور مشکل فونت نداشته باشد
-    user_info = {"name": name, "goal": goal}
-    pdf_bytes = create_pdf(df_plan, user_info, paces, zones)
-    d_col2.download_button(
-        label="📄 دانلود فایل PDF",
-        data=bytes(pdf_bytes),
-        file_name="training_plan.pdf",
-        mime="application/pdf"
-    )
-
-else:
-    st.error("لطفاً فرمت زمان را چک کنید (مثال: 24:30)")
+        with tab3:
+            # ساخت فایل ICS
+            ics_content = "BEGIN:VCALENDAR\nVERSION:2.0\nPRODID:-//RunnaAI//EN\n"
+            for i, row in df.iterrows():
+                if "Rest" in row['Activity']: continue
+                d_str = row['Date'].strftime("%Y%m%d")
+                ics_content += f"BEGIN:VEVENT\nDTSTART;VALUE=DATE:{d_str}\nSUMMARY:{row['Activity']}\nDESCRIPTION:{row['Details']}\nEND:VEVENT\n"
+            ics_content += "END:VCALENDAR"
+            
+            st.download_button("افزودن به تقویم موبایل/گوگل", ics_content, "plan.ics", "text/calendar")
